@@ -15,31 +15,37 @@
  */
 package org.acra.collector;
 
-import static org.acra.ACRA.LOG_TAG;
+import android.content.Context;
+import android.content.res.Configuration;
+import android.support.annotation.NonNull;
+import android.util.SparseArray;
+
+import org.acra.ACRA;
+import org.acra.ACRAConstants;
+import org.acra.ReportField;
+import org.acra.builder.ReportBuilder;
+import org.acra.model.ComplexElement;
+import org.acra.model.Element;
+import org.json.JSONException;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.util.HashMap;
+import java.util.Map;
 
-import org.acra.ACRA;
-
-import android.content.Context;
-import android.content.res.Configuration;
-import android.util.Log;
-import android.util.SparseArray;
+import static org.acra.ACRA.LOG_TAG;
 
 /**
  * Inspects a {@link Configuration} object through reflection API in order to
  * generate a human readable String with values replaced with their constants
  * names. The {@link Configuration#toString()} method was not enough as values
- * like 0, 1, 2 or 3 don't look readable to me. Using reflection API allows to
+ * like 0, 1, 2 or 3 aren't readable. Using reflection API allows to
  * retrieve hidden fields and can make us hope to be compatible with all Android
  * API levels, even those which are not published yet.
- * 
- * @author Kevin Gaudin
- * 
+ *
+ * @author Kevin Gaudin and F43nd1r
  */
-public final class ConfigurationCollector {
+public final class ConfigurationCollector extends Collector {
 
     private static final String SUFFIX_MASK = "_MASK";
     private static final String FIELD_SCREENLAYOUT = "screenLayout";
@@ -55,128 +61,151 @@ public final class ConfigurationCollector {
     private static final String PREFIX_KEYBOARDHIDDEN = "KEYBOARDHIDDEN_";
     private static final String PREFIX_KEYBOARD = "KEYBOARD_";
     private static final String PREFIX_HARDKEYBOARDHIDDEN = "HARDKEYBOARDHIDDEN_";
-    private static SparseArray<String> mHardKeyboardHiddenValues = new SparseArray<String>();
-    private static SparseArray<String> mKeyboardValues = new SparseArray<String>();
-    private static SparseArray<String> mKeyboardHiddenValues = new SparseArray<String>();
-    private static SparseArray<String> mNavigationValues = new SparseArray<String>();
-    private static SparseArray<String> mNavigationHiddenValues = new SparseArray<String>();
-    private static SparseArray<String> mOrientationValues = new SparseArray<String>();
-    private static SparseArray<String> mScreenLayoutValues = new SparseArray<String>();
-    private static SparseArray<String> mTouchScreenValues = new SparseArray<String>();
-    private static SparseArray<String> mUiModeValues = new SparseArray<String>();
 
-    private static final HashMap<String, SparseArray<String>> mValueArrays = new HashMap<String, SparseArray<String>>();
+    private final Context context;
+    private final Element initialConfiguration;
 
-    // Static init
-    static {
-        mValueArrays.put(PREFIX_HARDKEYBOARDHIDDEN, mHardKeyboardHiddenValues);
-        mValueArrays.put(PREFIX_KEYBOARD, mKeyboardValues);
-        mValueArrays.put(PREFIX_KEYBOARDHIDDEN, mKeyboardHiddenValues);
-        mValueArrays.put(PREFIX_NAVIGATION, mNavigationValues);
-        mValueArrays.put(PREFIX_NAVIGATIONHIDDEN, mNavigationHiddenValues);
-        mValueArrays.put(PREFIX_ORIENTATION, mOrientationValues);
-        mValueArrays.put(PREFIX_SCREENLAYOUT, mScreenLayoutValues);
-        mValueArrays.put(PREFIX_TOUCHSCREEN, mTouchScreenValues);
-        mValueArrays.put(PREFIX_UI_MODE, mUiModeValues);
+    public ConfigurationCollector(@NonNull Context context, @NonNull Element initialConfiguration) {
+        super(ReportField.INITIAL_CONFIGURATION, ReportField.CRASH_CONFIGURATION);
+        this.context = context;
+        this.initialConfiguration = initialConfiguration;
+    }
+
+    @NonNull
+    @Override
+    Element collect(ReportField reportField, ReportBuilder reportBuilder) {
+        switch (reportField) {
+            case INITIAL_CONFIGURATION:
+                return initialConfiguration;
+            case CRASH_CONFIGURATION:
+                return collectConfiguration(context);
+            default:
+                throw new IllegalArgumentException();
+        }
+    }
+
+    /**
+     * Creates an Element listing all values human readable
+     * from the provided Configuration instance.
+     *
+     * @param conf The Configuration to be described.
+     * @return An Element describing all the fields of the given Configuration,
+     * with values replaced by constant names.
+     */
+    @NonNull
+    private static Element configToElement(@NonNull Configuration conf) {
+        final ComplexElement result = new ComplexElement();
+        Map<String, SparseArray<String>> valueArrays = getValueArrays();
+        for (final Field f : conf.getClass().getFields()) {
+            try {
+                if (!Modifier.isStatic(f.getModifiers())) {
+                    final String fieldName = f.getName();
+                    try {
+                        if (f.getType().equals(int.class)) {
+                            result.put(fieldName, getFieldValueName(valueArrays, conf, f));
+                        } else if (f.get(conf) != null) {
+                            result.put(fieldName, f.get(conf));
+                        }
+                    } catch (JSONException e) {
+                        ACRA.log.w(LOG_TAG, "Could not collect configuration field " + fieldName, e);
+                    }
+                }
+            } catch (@NonNull IllegalArgumentException e) {
+                ACRA.log.e(LOG_TAG, "Error while inspecting device configuration: ", e);
+            } catch (@NonNull IllegalAccessException e) {
+                ACRA.log.e(LOG_TAG, "Error while inspecting device configuration: ", e);
+            }
+        }
+        return result;
+    }
+
+    private static Map<String, SparseArray<String>> getValueArrays() {
+        Map<String, SparseArray<String>> valueArrays = new HashMap<String, SparseArray<String>>();
+        final SparseArray<String> hardKeyboardHiddenValues = new SparseArray<String>();
+        final SparseArray<String> keyboardValues = new SparseArray<String>();
+        final SparseArray<String> keyboardHiddenValues = new SparseArray<String>();
+        final SparseArray<String> navigationValues = new SparseArray<String>();
+        final SparseArray<String> navigationHiddenValues = new SparseArray<String>();
+        final SparseArray<String> orientationValues = new SparseArray<String>();
+        final SparseArray<String> screenLayoutValues = new SparseArray<String>();
+        final SparseArray<String> touchScreenValues = new SparseArray<String>();
+        final SparseArray<String> uiModeValues = new SparseArray<String>();
 
         for (final Field f : Configuration.class.getFields()) {
             if (Modifier.isStatic(f.getModifiers()) && Modifier.isFinal(f.getModifiers())) {
                 final String fieldName = f.getName();
                 try {
                     if (fieldName.startsWith(PREFIX_HARDKEYBOARDHIDDEN)) {
-                        mHardKeyboardHiddenValues.put(f.getInt(null), fieldName);
+                        hardKeyboardHiddenValues.put(f.getInt(null), fieldName);
                     } else if (fieldName.startsWith(PREFIX_KEYBOARD)) {
-                        mKeyboardValues.put(f.getInt(null), fieldName);
+                        keyboardValues.put(f.getInt(null), fieldName);
                     } else if (fieldName.startsWith(PREFIX_KEYBOARDHIDDEN)) {
-                        mKeyboardHiddenValues.put(f.getInt(null), fieldName);
+                        keyboardHiddenValues.put(f.getInt(null), fieldName);
                     } else if (fieldName.startsWith(PREFIX_NAVIGATION)) {
-                        mNavigationValues.put(f.getInt(null), fieldName);
+                        navigationValues.put(f.getInt(null), fieldName);
                     } else if (fieldName.startsWith(PREFIX_NAVIGATIONHIDDEN)) {
-                        mNavigationHiddenValues.put(f.getInt(null), fieldName);
+                        navigationHiddenValues.put(f.getInt(null), fieldName);
                     } else if (fieldName.startsWith(PREFIX_ORIENTATION)) {
-                        mOrientationValues.put(f.getInt(null), fieldName);
+                        orientationValues.put(f.getInt(null), fieldName);
                     } else if (fieldName.startsWith(PREFIX_SCREENLAYOUT)) {
-                        mScreenLayoutValues.put(f.getInt(null), fieldName);
+                        screenLayoutValues.put(f.getInt(null), fieldName);
                     } else if (fieldName.startsWith(PREFIX_TOUCHSCREEN)) {
-                        mTouchScreenValues.put(f.getInt(null), fieldName);
+                        touchScreenValues.put(f.getInt(null), fieldName);
                     } else if (fieldName.startsWith(PREFIX_UI_MODE)) {
-                        mUiModeValues.put(f.getInt(null), fieldName);
+                        uiModeValues.put(f.getInt(null), fieldName);
                     }
-                } catch (IllegalArgumentException e) {
-                    Log.w(LOG_TAG, "Error while inspecting device configuration: ", e);
-                } catch (IllegalAccessException e) {
-                    Log.w(LOG_TAG, "Error while inspecting device configuration: ", e);
+                } catch (@NonNull IllegalArgumentException e) {
+                    ACRA.log.w(LOG_TAG, "Error while inspecting device configuration: ", e);
+                } catch (@NonNull IllegalAccessException e) {
+                    ACRA.log.w(LOG_TAG, "Error while inspecting device configuration: ", e);
                 }
             }
         }
-    }
 
-    /**
-     * Use this method to generate a human readable String listing all values
-     * from the provided Configuration instance.
-     * 
-     * @param conf
-     *            The Configuration to be described.
-     * @return A String describing all the fields of the given Configuration,
-     *         with values replaced by constant names.
-     */
-    public static String toString(Configuration conf) {
-        final StringBuilder result = new StringBuilder();
-        for (final Field f : conf.getClass().getFields()) {
-            try {
-                if (!Modifier.isStatic(f.getModifiers())) {
-                    final String fieldName = f.getName();
-                    result.append(fieldName).append('=');
-                    if (f.getType().equals(int.class)) {
-                        result.append(getFieldValueName(conf, f));
-                    } else if(f.get(conf) != null){
-                        result.append(f.get(conf).toString());
-                    }
-                    result.append('\n');
-                }
-            } catch (IllegalArgumentException e) {
-                Log.e(LOG_TAG, "Error while inspecting device configuration: ", e);
-            } catch (IllegalAccessException e) {
-                Log.e(LOG_TAG, "Error while inspecting device configuration: ", e);
-            }
-        }
-        return result.toString();
+        valueArrays.put(PREFIX_HARDKEYBOARDHIDDEN, hardKeyboardHiddenValues);
+        valueArrays.put(PREFIX_KEYBOARD, keyboardValues);
+        valueArrays.put(PREFIX_KEYBOARDHIDDEN, keyboardHiddenValues);
+        valueArrays.put(PREFIX_NAVIGATION, navigationValues);
+        valueArrays.put(PREFIX_NAVIGATIONHIDDEN, navigationHiddenValues);
+        valueArrays.put(PREFIX_ORIENTATION, orientationValues);
+        valueArrays.put(PREFIX_SCREENLAYOUT, screenLayoutValues);
+        valueArrays.put(PREFIX_TOUCHSCREEN, touchScreenValues);
+        valueArrays.put(PREFIX_UI_MODE, uiModeValues);
+        return valueArrays;
     }
 
     /**
      * Retrieve the name of the constant defined in the {@link Configuration}
      * class which defines the value of a field in a {@link Configuration}
      * instance.
-     * 
-     * @param conf
-     *            The instance of {@link Configuration} where the value is
-     *            stored.
-     * @param f
-     *            The {@link Field} to be inspected in the {@link Configuration}
-     *            instance.
+     *
+     * @param conf The instance of {@link Configuration} where the value is
+     *             stored.
+     * @param f    The {@link Field} to be inspected in the {@link Configuration}
+     *             instance.
      * @return The value of the field f in instance conf translated to its
-     *         constant name.
+     * constant name.
      * @throws IllegalAccessException if the supplied field is inaccessible.
      */
-    private static String getFieldValueName(Configuration conf, Field f) throws IllegalAccessException {
+    private static Object getFieldValueName(Map<String, SparseArray<String>> valueArrays, @NonNull Configuration conf, @NonNull Field f) throws IllegalAccessException {
         final String fieldName = f.getName();
         if (fieldName.equals(FIELD_MCC) || fieldName.equals(FIELD_MNC)) {
-            return Integer.toString(f.getInt(conf));
+            return f.getInt(conf);
         } else if (fieldName.equals(FIELD_UIMODE)) {
-            return activeFlags(mValueArrays.get(PREFIX_UI_MODE), f.getInt(conf));
+            return activeFlags(valueArrays.get(PREFIX_UI_MODE), f.getInt(conf));
         } else if (fieldName.equals(FIELD_SCREENLAYOUT)) {
-            return activeFlags(mValueArrays.get(PREFIX_SCREENLAYOUT), f.getInt(conf));
+            return activeFlags(valueArrays.get(PREFIX_SCREENLAYOUT), f.getInt(conf));
         } else {
-            final SparseArray<String> values = mValueArrays.get(fieldName.toUpperCase() + '_');
+            final SparseArray<String> values = valueArrays.get(fieldName.toUpperCase() + '_');
             if (values == null) {
                 // Unknown field, return the raw int as String
-                return Integer.toString(f.getInt(conf));
+                return f.getInt(conf);
             }
 
             final String value = values.get(f.getInt(conf));
             if (value == null) {
                 // Unknown value, return the raw int as String
-                return Integer.toString(f.getInt(conf));
+                return f.getInt(conf);
             }
             return value;
         }
@@ -186,16 +215,15 @@ public final class ConfigurationCollector {
      * Some fields contain multiple value types which can be isolated by
      * applying a bitmask. That method returns the concatenation of active
      * values.
-     * 
-     * @param valueNames
-     *            The array containing the different values and names for this
-     *            field. Must contain mask values too.
-     * @param bitfield
-     *            The bitfield to inspect.
+     *
+     * @param valueNames The array containing the different values and names for this
+     *                   field. Must contain mask values too.
+     * @param bitfield   The bitfield to inspect.
      * @return The names of the different values contained in the bitfield,
-     *         separated by '+'.
+     * separated by '+'.
      */
-    private static String activeFlags(SparseArray<String> valueNames, int bitfield) {
+    @NonNull
+    private static String activeFlags(@NonNull SparseArray<String> valueNames, int bitfield) {
         final StringBuilder result = new StringBuilder();
 
         // Look for masks, apply it an retrieve the masked value
@@ -213,20 +241,20 @@ public final class ConfigurationCollector {
         }
         return result.toString();
     }
-    
+
     /**
      * Returns the current Configuration for this application.
      *
-     * @param context   Context for the application being reported.
+     * @param context Context for the application being reported.
      * @return A String representation of the current configuration for the application.
      */
-    public static String collectConfiguration(Context context) {
+    @NonNull
+    public static Element collectConfiguration(@NonNull Context context) {
         try {
-            final Configuration crashConf = context.getResources().getConfiguration();
-            return ConfigurationCollector.toString(crashConf);
+            return configToElement(context.getResources().getConfiguration());
         } catch (RuntimeException e) {
-            Log.w(ACRA.LOG_TAG, "Couldn't retrieve CrashConfiguration for : " + context.getPackageName(), e);
-            return "Couldn't retrieve crash config";
+            ACRA.log.w(LOG_TAG, "Couldn't retrieve CrashConfiguration for : " + context.getPackageName(), e);
+            return ACRAConstants.NOT_AVAILABLE;
         }
     }
 }

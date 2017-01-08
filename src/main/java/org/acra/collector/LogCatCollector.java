@@ -15,57 +15,64 @@
  */
 package org.acra.collector;
 
-import static org.acra.ACRA.LOG_TAG;
+import android.Manifest;
+import android.os.Build;
+import android.support.annotation.NonNull;
+import android.support.annotation.Nullable;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.LinkedList;
-import java.util.List;
+import com.android.internal.util.Predicate;
 
 import org.acra.ACRA;
 import org.acra.ACRAConstants;
+import org.acra.ReportField;
 import org.acra.annotation.ReportsCrashes;
-import org.acra.util.BoundedLinkedList;
+import org.acra.builder.ReportBuilder;
+import org.acra.config.ACRAConfiguration;
+import org.acra.model.Element;
+import org.acra.model.StringElement;
+import org.acra.util.IOUtils;
+import org.acra.util.PackageManagerWrapper;
 
-import android.util.Log;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+
+import static org.acra.ACRA.LOG_TAG;
+
 
 /**
  * Executes logcat commands and collects it's output.
- * 
- * @author Kevin Gaudin
- * 
+ *
+ * @author Kevin Gaudin & F43nd1r
  */
-class LogCatCollector {
+final class LogCatCollector extends Collector {
 
-    /**
-     * Default number of latest lines kept from the logcat output.
-     */
-    private static final int DEFAULT_TAIL_COUNT = 100;
+    private final ACRAConfiguration config;
+    private final PackageManagerWrapper pm;
+
+    LogCatCollector(ACRAConfiguration config, PackageManagerWrapper pm) {
+        super(ReportField.LOGCAT, ReportField.EVENTSLOG, ReportField.RADIOLOG);
+        this.config = config;
+        this.pm = pm;
+    }
 
     /**
      * Executes the logcat command with arguments taken from
      * {@link ReportsCrashes#logcatArguments()}
-     * 
-     * @param bufferName
-     *            The name of the buffer to be read: "main" (default), "radio"
-     *            or "events".
+     *
+     * @param bufferName The name of the buffer to be read: "main" (default), "radio" or "events".
      * @return A {@link String} containing the latest lines of the output.
-     *         Default is 100 lines, use "-t", "300" in
-     *         {@link ReportsCrashes#logcatArguments()} if you want 300 lines.
-     *         You should be aware that increasing this value causes a longer
-     *         report generation time and a bigger footprint on the device data
-     *         plan consumption.
+     * Default is 100 lines, use "-t", "300" in
+     * {@link ReportsCrashes#logcatArguments()} if you want 300 lines.
+     * You should be aware that increasing this value causes a longer
+     * report generation time and a bigger footprint on the device data
+     * plan consumption.
      */
-    public static String collectLogCat(String bufferName) {
+    private Element collectLogCat(@Nullable String bufferName) {
         final int myPid = android.os.Process.myPid();
-        String myPidStr = null;
-        if (ACRA.getConfig().logcatFilterByPid() && myPid > 0) {
-            myPidStr = Integer.toString(myPid) +"):";
-        }
+        final String myPidStr = config.logcatFilterByPid() && myPid > 0 ? Integer.toString(myPid) + "):" : null;
 
         final List<String> commandLine = new ArrayList<String>();
         commandLine.add("logcat");
@@ -74,65 +81,81 @@ class LogCatCollector {
             commandLine.add(bufferName);
         }
 
-        // "-t n" argument has been introduced in FroYo (API level 8). For
-        // devices with lower API level, we will have to emulate its job.
         final int tailCount;
-        final List<String> logcatArgumentsList = new ArrayList<String>(
-                Arrays.asList(ACRA.getConfig().logcatArguments()));
+        final List<String> logcatArgumentsList = config.logcatArguments();
 
         final int tailIndex = logcatArgumentsList.indexOf("-t");
         if (tailIndex > -1 && tailIndex < logcatArgumentsList.size()) {
             tailCount = Integer.parseInt(logcatArgumentsList.get(tailIndex + 1));
-            if (Compatibility.getAPILevel() < 8) {
-                logcatArgumentsList.remove(tailIndex + 1);
-                logcatArgumentsList.remove(tailIndex);
-                logcatArgumentsList.add("-d");
-            }
         } else {
             tailCount = -1;
         }
 
-        final LinkedList<String> logcatBuf = new BoundedLinkedList<String>(tailCount > 0 ? tailCount
-                : DEFAULT_TAIL_COUNT);
+        Element logcat;
         commandLine.addAll(logcatArgumentsList);
-        
-        BufferedReader bufferedReader = null;
 
         try {
-            final Process process = Runtime.getRuntime().exec(commandLine.toArray(new String[commandLine.size()]));
-            bufferedReader = new BufferedReader(new InputStreamReader(process.getInputStream()), ACRAConstants.DEFAULT_BUFFER_SIZE_IN_BYTES);
+            final Process process =  new ProcessBuilder().command(commandLine).redirectErrorStream(true).start();
 
-            Log.d(LOG_TAG, "Retrieving logcat output...");
+            if (ACRA.DEV_LOGGING) ACRA.log.d(LOG_TAG, "Retrieving logcat output...");
 
-            // Dump stderr to null
-            new Thread(new Runnable() {
-                public void run() {
-                    try {
-                        InputStream stderr = process.getErrorStream();
-                        byte[] dummy = new byte[ACRAConstants.DEFAULT_BUFFER_SIZE_IN_BYTES];
-                        while (stderr.read(dummy) >= 0)
-                            ;
-                    } catch (IOException e) {
-                    }
+            logcat = new StringElement(streamToString(process.getInputStream(), new Predicate<String>() {
+                @Override
+                public boolean apply(String s) {
+                    return myPidStr == null || s.contains(myPidStr);
                 }
-            }).start();
-
-            while (true) {
-                final String line = bufferedReader.readLine();
-                if (line == null) {
-                    break;
-                }
-                if (myPidStr == null || line.contains(myPidStr)) {
-                    logcatBuf.add(line + "\n");
-                }
-            }
+            }, tailCount));
+            process.destroy();
 
         } catch (IOException e) {
-            Log.e(ACRA.LOG_TAG, "LogCatCollector.collectLogCat could not retrieve data.", e);
-        } finally {
-            CollectorUtil.safeClose(bufferedReader);
+            ACRA.log.e(LOG_TAG, "LogCatCollector.collectLogCat could not retrieve data.", e);
+            logcat = ACRAConstants.NOT_AVAILABLE;
         }
 
-        return logcatBuf.toString();
+        return logcat;
+    }
+
+    @Override
+    boolean shouldCollect(Set<ReportField> crashReportFields, ReportField collect, ReportBuilder reportBuilder) {
+        return super.shouldCollect(crashReportFields, collect, reportBuilder)
+                && (pm.hasPermission(Manifest.permission.READ_LOGS)
+                || Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN);
+    }
+
+    @NonNull
+    @Override
+    Element collect(ReportField reportField, ReportBuilder reportBuilder) {
+        String bufferName = null;
+        switch (reportField) {
+            case LOGCAT:
+                bufferName = null;
+                break;
+            case EVENTSLOG:
+                bufferName = "events";
+                break;
+            case RADIOLOG:
+                bufferName = "radio";
+                break;
+        }
+        return collectLogCat(bufferName);
+    }
+
+    /**
+     * Reads an InputStream into a string in an non blocking way for current thread
+     * It has a default timeout of 3 seconds.
+     *
+     * @param input  the stream
+     * @param filter should return false for lines which should be excluded
+     * @param limit  the maximum number of lines to read (the last x lines are kept)
+     * @return the String that was read.
+     * @throws IOException if the stream cannot be read.
+     */
+    @NonNull
+    private String streamToString(@NonNull InputStream input, Predicate<String> filter, int limit) throws IOException {
+        if (config.nonBlockingReadForLogcat()) {
+            return IOUtils.streamToStringNonBlockingRead(input, filter, limit);
+        } else {
+            return IOUtils.streamToString(input, filter, limit);
+        }
     }
 }

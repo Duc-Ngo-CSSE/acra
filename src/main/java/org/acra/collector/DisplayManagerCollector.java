@@ -1,294 +1,231 @@
+/*
+ *  Copyright 2016
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ */
 package org.acra.collector;
-
-import java.lang.reflect.Field;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
-
-import org.acra.ACRA;
 
 import android.content.Context;
 import android.graphics.Point;
 import android.graphics.Rect;
+import android.os.Build;
+import android.support.annotation.NonNull;
+import android.support.v4.hardware.display.DisplayManagerCompat;
 import android.util.DisplayMetrics;
 import android.util.SparseArray;
 import android.view.Display;
 import android.view.Surface;
-import android.view.WindowManager;
 
-final class DisplayManagerCollector {
+import org.acra.ACRA;
+import org.acra.ReportField;
+import org.acra.builder.ReportBuilder;
+import org.acra.model.ComplexElement;
+import org.acra.model.Element;
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
 
-    final static SparseArray<String> mFlagsNames = new SparseArray<String>();
-    final static SparseArray<String> mDensities = new SparseArray<String>();
+import java.lang.reflect.Field;
+import java.util.Arrays;
 
-    public static String collectDisplays(Context ctx) {
-        Display[] displays = null;
-        final StringBuilder result = new StringBuilder();
+/**
+ * Collects information about the connected display(s)
+ *
+ * @author (original author unknown) & F43nd1r
+ */
+final class DisplayManagerCollector extends Collector {
+    private final Context context;
+    private final SparseArray<String> flagNames = new SparseArray<String>();
 
-        if (Compatibility.getAPILevel() < 17) {
-            // Before Android 4.2, there was a single display available from the
-            // window manager
-            final WindowManager windowManager = (WindowManager) ctx
-                    .getSystemService(android.content.Context.WINDOW_SERVICE);
-            displays = new Display[1];
-            displays[0] = windowManager.getDefaultDisplay();
-        } else {
-            // Since Android 4.2, we can fetch multiple displays with the
-            // DisplayManager.
+    DisplayManagerCollector(Context context) {
+        super(ReportField.DISPLAY);
+        this.context = context;
+    }
+
+
+    @NonNull
+    @Override
+    Element collect(ReportField reportField, ReportBuilder reportBuilder) {
+        final ComplexElement result = new ComplexElement();
+        for (Display display : DisplayManagerCompat.getInstance(context).getDisplays()) {
             try {
-                Object displayManager = ctx.getSystemService((String) (ctx.getClass().getField("DISPLAY_SERVICE")
-                        .get(null)));
-                Method getDisplays = displayManager.getClass().getMethod("getDisplays");
-                displays = (Display[]) getDisplays.invoke(displayManager);
-            } catch (IllegalArgumentException e) {
-                ACRA.log.w(ACRA.LOG_TAG, "Error while collecting DisplayManager data: ", e);
-            } catch (SecurityException e) {
-                ACRA.log.w(ACRA.LOG_TAG, "Error while collecting DisplayManager data: ", e);
-            } catch (IllegalAccessException e) {
-                ACRA.log.w(ACRA.LOG_TAG, "Error while collecting DisplayManager data: ", e);
-            } catch (NoSuchFieldException e) {
-                ACRA.log.w(ACRA.LOG_TAG, "Error while collecting DisplayManager data: ", e);
-            } catch (NoSuchMethodException e) {
-                ACRA.log.w(ACRA.LOG_TAG, "Error while collecting DisplayManager data: ", e);
-            } catch (InvocationTargetException e) {
-                ACRA.log.w(ACRA.LOG_TAG, "Error while collecting DisplayManager data: ", e);
+                result.put(String.valueOf(display.getDisplayId()), collectDisplayData(display));
+            } catch (JSONException e) {
+                ACRA.log.w(ACRA.LOG_TAG, "Failed to collect data for display " + display.getDisplayId(), e);
             }
         }
 
-        for (Display display : displays) {
-            result.append(collectDisplayData(display));
-        }
-
-        return result.toString();
+        return result;
     }
 
-    private static Object collectDisplayData(Display display) {
+    @NonNull
+    private JSONObject collectDisplayData(@NonNull Display display) throws JSONException {
         final DisplayMetrics metrics = new DisplayMetrics();
         display.getMetrics(metrics);
 
-        final StringBuilder result = new StringBuilder();
-
-        result.append(collectCurrentSizeRange(display));
-        result.append(collectFlags(display));
-        result.append(display.getDisplayId()).append(".height=").append(display.getHeight()).append('\n');
-        result.append(collectMetrics(display, "getMetrics"));
-        result.append(collectName(display));
-        result.append(display.getDisplayId()).append(".orientation=").append(display.getOrientation()).append('\n');
-        result.append(display.getDisplayId()).append(".pixelFormat=").append(display.getPixelFormat()).append('\n');
-        result.append(collectMetrics(display, "getRealMetrics"));
-        result.append(collectSize(display, "getRealSize"));
-        result.append(collectRectSize(display));
-        result.append(display.getDisplayId()).append(".refreshRate=").append(display.getRefreshRate()).append('\n');
-        result.append(collectRotation(display));
-        result.append(collectSize(display, "getSize"));
-        result.append(display.getDisplayId()).append(".width=").append(display.getWidth()).append('\n');
-        result.append(collectIsValid(display));
-
-        return result.toString();
+        final JSONObject result = new JSONObject();
+        collectCurrentSizeRange(display, result);
+        collectFlags(display, result);
+        collectMetrics(display, result);
+        collectRealMetrics(display, result);
+        collectName(display, result);
+        collectRealSize(display, result);
+        collectRectSize(display, result);
+        collectSize(display, result);
+        collectRotation(display, result);
+        collectIsValid(display, result);
+        result.put("orientation", display.getRotation())
+                .put("refreshRate", display.getRefreshRate());
+        //noinspection deprecation
+        result.put("height", display.getHeight())
+                .put("width", display.getWidth())
+                .put("pixelFormat", display.getPixelFormat());
+        return result;
     }
 
-    private static Object collectIsValid(Display display) {
-        StringBuilder result = new StringBuilder();
-        try {
-            Method isValid = display.getClass().getMethod("isValid");
-            Boolean value = (Boolean) isValid.invoke(display);
-            result.append(display.getDisplayId()).append(".isValid=").append(value).append('\n');
-        } catch (SecurityException e) {
-        } catch (NoSuchMethodException e) {
-        } catch (IllegalArgumentException e) {
-        } catch (IllegalAccessException e) {
-        } catch (InvocationTargetException e) {
+    private static void collectIsValid(@NonNull Display display, JSONObject container) throws JSONException {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
+            container.put("isValid", display.isValid());
         }
-        return result.toString();
     }
 
-    private static Object collectRotation(Display display) {
-        StringBuilder result = new StringBuilder();
-        try {
-            Method getRotation = display.getClass().getMethod("getRotation");
-            int rotation = (Integer) getRotation.invoke(display);
-            result.append(display.getDisplayId()).append(".rotation=");
-            switch (rotation) {
+    private static void collectRotation(@NonNull Display display, JSONObject container) throws JSONException {
+        container.put("rotation", rotationToString(display.getRotation()));
+    }
+
+    @NonNull
+    private static String rotationToString(int rotation) {
+        switch (rotation) {
             case Surface.ROTATION_0:
-                result.append("ROTATION_0");
-                break;
+                return "ROTATION_0";
             case Surface.ROTATION_90:
-                result.append("ROTATION_90");
-                break;
+                return "ROTATION_90";
             case Surface.ROTATION_180:
-                result.append("ROTATION_180");
-                break;
+                return "ROTATION_180";
             case Surface.ROTATION_270:
-                result.append("ROTATION_270");
-                break;
+                return "ROTATION_270";
             default:
-                result.append(rotation);
-                break;
-            }
-            result.append('\n');
-        } catch (SecurityException e) {
-        } catch (NoSuchMethodException e) {
-        } catch (IllegalArgumentException e) {
-        } catch (IllegalAccessException e) {
-        } catch (InvocationTargetException e) {
+                return String.valueOf(rotation);
         }
-        return result.toString();
     }
 
-    private static Object collectRectSize(Display display) {
-        StringBuilder result = new StringBuilder();
-        try {
-            Method getRectSize = display.getClass().getMethod("getRectSize", Rect.class);
-            Rect size = new Rect();
-            getRectSize.invoke(display, size);
-            result.append(display.getDisplayId()).append(".rectSize=[").append(size.top).append(',').append(size.left)
-                    .append(',').append(size.width()).append(',').append(size.height()).append(']').append('\n');
-        } catch (SecurityException e) {
-        } catch (NoSuchMethodException e) {
-        } catch (IllegalArgumentException e) {
-        } catch (IllegalAccessException e) {
-        } catch (InvocationTargetException e) {
+    private static void collectRectSize(@NonNull Display display, JSONObject container) throws JSONException {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.HONEYCOMB_MR2) {
+            final Rect size = new Rect();
+            display.getRectSize(size);
+            container.put("rectSize", new JSONArray(Arrays.asList(size.top, size.left, size.width(), size.height())));
         }
-        return result.toString();
     }
 
-    private static Object collectSize(Display display, String methodName) {
-        StringBuilder result = new StringBuilder();
-        try {
-            Method getRealSize = display.getClass().getMethod(methodName, Point.class);
-            Point size = new Point();
-            getRealSize.invoke(display, size);
-            result.append(display.getDisplayId()).append('.').append(methodName).append("=[").append(size.x)
-                    .append(',').append(size.y).append(']').append('\n');
-        } catch (SecurityException e) {
-        } catch (NoSuchMethodException e) {
-        } catch (IllegalArgumentException e) {
-        } catch (IllegalAccessException e) {
-        } catch (InvocationTargetException e) {
+    private static void collectSize(@NonNull Display display, JSONObject container) throws JSONException {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.HONEYCOMB_MR2) {
+            final Point size = new Point();
+            display.getSize(size);
+            container.put("size", new JSONArray(Arrays.asList(size.x, size.y)));
         }
-        return result.toString();
     }
 
-    private static String collectCurrentSizeRange(Display display) {
-        StringBuilder result = new StringBuilder();
-        try {
-            Method getCurrentSizeRange = display.getClass().getMethod("getCurrentSizeRange", Point.class, Point.class);
-            Point smallest = new Point(), largest = new Point();
-            getCurrentSizeRange.invoke(display, smallest, largest);
-            result.append(display.getDisplayId()).append(".currentSizeRange.smallest=[").append(smallest.x).append(',')
-                    .append(smallest.y).append(']').append('\n');
-            result.append(display.getDisplayId()).append(".currentSizeRange.largest=[").append(largest.x).append(',')
-                    .append(largest.y).append(']').append('\n');
-        } catch (SecurityException e) {
-        } catch (NoSuchMethodException e) {
-        } catch (IllegalArgumentException e) {
-        } catch (IllegalAccessException e) {
-        } catch (InvocationTargetException e) {
+    private static void collectRealSize(@NonNull Display display, JSONObject container) throws JSONException {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
+            final Point size = new Point();
+            display.getRealSize(size);
+            container.put("realSize", new JSONArray(Arrays.asList(size.x, size.y)));
         }
-        return result.toString();
     }
 
-    private static String collectFlags(Display display) {
-        StringBuilder result = new StringBuilder();
-        try {
-            Method getFlags = display.getClass().getMethod("getFlags");
-            int flags = (Integer) getFlags.invoke(display);
+    private static void collectCurrentSizeRange(@NonNull Display display, @NonNull JSONObject container) throws JSONException {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
+            final Point smallest = new Point();
+            final Point largest = new Point();
+            display.getCurrentSizeRange(smallest, largest);
+            JSONObject result = new JSONObject();
+            result.put("smallest", new JSONArray(Arrays.asList(smallest.x, smallest.y)));
+            result.put("largest", new JSONArray(Arrays.asList(largest.x, largest.y)));
+            container.put("currentSizeRange", result);
+        }
+    }
 
+    private void collectFlags(@NonNull Display display, @NonNull JSONObject container) throws JSONException {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
+            final int flags = display.getFlags();
             for (Field field : display.getClass().getFields()) {
                 if (field.getName().startsWith("FLAG_")) {
-                    mFlagsNames.put(field.getInt(null), field.getName());
+                    try {
+                        flagNames.put(field.getInt(null), field.getName());
+                    } catch (IllegalAccessException ignored) {
+                    }
                 }
             }
-
-            result.append(display.getDisplayId()).append(".flags=").append(activeFlags(mFlagsNames, flags))
-                    .append('\n');
-        } catch (SecurityException e) {
-        } catch (NoSuchMethodException e) {
-        } catch (IllegalArgumentException e) {
-        } catch (IllegalAccessException e) {
-        } catch (InvocationTargetException e) {
+            container.put("flags", activeFlags(flags));
         }
-        return result.toString();
     }
 
-    private static String collectName(Display display) {
-        StringBuilder result = new StringBuilder();
-        try {
-            Method getName = display.getClass().getMethod("getName");
-            String name = (String) getName.invoke(display);
-
-            result.append(display.getDisplayId()).append(".name=").append(name).append('\n');
-        } catch (SecurityException e) {
-        } catch (NoSuchMethodException e) {
-        } catch (IllegalArgumentException e) {
-        } catch (IllegalAccessException e) {
-        } catch (InvocationTargetException e) {
+    private static void collectName(@NonNull Display display, JSONObject container) throws JSONException {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
+            container.put("name", display.getName());
         }
-        return result.toString();
     }
 
-    private static Object collectMetrics(Display display, String methodName) {
-        StringBuilder result = new StringBuilder();
-        try {
-            Method getMetrics = display.getClass().getMethod(methodName);
-            DisplayMetrics metrics = (DisplayMetrics) getMetrics.invoke(display);
+    private static void collectMetrics(@NonNull Display display, JSONObject container) throws JSONException {
+        final DisplayMetrics metrics = new DisplayMetrics();
+        display.getMetrics(metrics);
+        JSONObject result = new JSONObject();
+        collectMetrics(metrics, result);
+        container.put("metrics", result);
+    }
 
-            for (Field field : DisplayMetrics.class.getFields()) {
-                if (field.getType().equals(Integer.class) && field.getName().startsWith("DENSITY_")
-                        && !field.getName().equals("DENSITY_DEFAULT")) {
-                    mDensities.put(field.getInt(null), field.getName());
-                }
-            }
-
-            result.append(display.getDisplayId()).append('.').append(methodName).append(".density=")
-                    .append(metrics.density).append('\n');
-            result.append(display.getDisplayId()).append('.').append(methodName).append(".densityDpi=")
-                    .append(metrics.getClass().getField("densityDpi")).append('\n');
-            result.append(display.getDisplayId()).append('.').append(methodName).append("scaledDensity=x")
-                    .append(metrics.scaledDensity).append('\n');
-            result.append(display.getDisplayId()).append('.').append(methodName).append(".widthPixels=")
-                    .append(metrics.widthPixels).append('\n');
-            result.append(display.getDisplayId()).append('.').append(methodName).append(".heightPixels=")
-                    .append(metrics.heightPixels).append('\n');
-            result.append(display.getDisplayId()).append('.').append(methodName).append(".xdpi=").append(metrics.xdpi)
-                    .append('\n');
-            result.append(display.getDisplayId()).append('.').append(methodName).append(".ydpi=").append(metrics.ydpi)
-                    .append('\n');
-
-        } catch (SecurityException e) {
-        } catch (NoSuchMethodException e) {
-        } catch (IllegalArgumentException e) {
-        } catch (IllegalAccessException e) {
-        } catch (InvocationTargetException e) {
-        } catch (NoSuchFieldException e) {
+    private static void collectRealMetrics(@NonNull Display display, JSONObject container) throws JSONException {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
+            final DisplayMetrics metrics = new DisplayMetrics();
+            display.getRealMetrics(metrics);
+            JSONObject result = new JSONObject();
+            collectMetrics(metrics, result);
+            container.put("realMetrics", result);
         }
-        return result.toString();
+    }
+
+    private static void collectMetrics(@NonNull DisplayMetrics metrics, JSONObject container) throws JSONException {
+        container.put("density", metrics.density)
+                .put("densityDpi", metrics.densityDpi)
+                .put("scaledDensity", "x" + metrics.scaledDensity)
+                .put("widthPixels", metrics.widthPixels)
+                .put("heightPixels", metrics.heightPixels)
+                .put("xdpi", metrics.xdpi)
+                .put("ydpi", metrics.ydpi);
     }
 
     /**
      * Some fields contain multiple value types which can be isolated by
      * applying a bitmask. That method returns the concatenation of active
      * values.
-     * 
-     * @param valueNames
-     *            The array containing the different values and names for this
-     *            field. Must contain mask values too.
-     * @param bitfield
-     *            The bitfield to inspect.
+     *
+     * @param bitfield The bitfield to inspect.
      * @return The names of the different values contained in the bitfield,
-     *         separated by '+'.
+     * separated by '+'.
      */
-    private static String activeFlags(SparseArray<String> valueNames, int bitfield) {
+    @NonNull
+    private String activeFlags(int bitfield) {
         final StringBuilder result = new StringBuilder();
 
         // Look for masks, apply it an retrieve the masked value
-        for (int i = 0; i < valueNames.size(); i++) {
-            final int maskValue = valueNames.keyAt(i);
+        for (int i = 0; i < flagNames.size(); i++) {
+            final int maskValue = flagNames.keyAt(i);
             final int value = bitfield & maskValue;
             if (value > 0) {
                 if (result.length() > 0) {
                     result.append('+');
                 }
-                result.append(valueNames.get(value));
+                result.append(flagNames.get(value));
             }
         }
         return result.toString();

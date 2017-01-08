@@ -16,59 +16,117 @@
 
 package org.acra.collector;
 
-import java.io.BufferedReader;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.io.InputStreamReader;
-
-import org.acra.util.BoundedLinkedList;
-
 import android.app.Application;
 import android.content.Context;
+import android.os.Environment;
+import android.support.annotation.NonNull;
+import android.support.v4.content.ContextCompat;
+
+import org.acra.ACRA;
+import org.acra.ACRAConstants;
+import org.acra.ReportField;
+import org.acra.builder.ReportBuilder;
+import org.acra.config.ACRAConfiguration;
+import org.acra.file.Directory;
+import org.acra.model.Element;
+import org.acra.model.StringElement;
+import org.acra.util.IOUtils;
+
+import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+
+import static org.acra.ACRA.LOG_TAG;
 
 /**
  * Collects the N last lines of a text stream. Use this collector if your
  * application handles its own logging system.
- * 
- * @author Kevin Gaudin
- * 
+ *
+ * @author Kevin Gaudin & F43nd1r
  */
-class LogFileCollector {
+final class LogFileCollector extends Collector {
+    private final Context context;
+    private final ACRAConfiguration config;
 
-    /**
-     * Private constructor to prevent instantiation.
-     */
-    private LogFileCollector() {
-    };
+    LogFileCollector(Context context, ACRAConfiguration config) {
+        super(ReportField.APPLICATION_LOG);
+        this.context = context;
+        this.config = config;
+    }
 
     /**
      * Reads the last lines of a custom log file. The file name is assumed as
      * located in the {@link Application#getFilesDir()} directory if it does not
      * contain any path separator.
-     * 
-     * @param context
-     * @param fileName
-     * @param numberOfLines
-     * @return
-     * @throws IOException
+     *
+     * @return An Element containing all of the requested lines.
      */
-    public static String collectLogFile(Context context, String fileName, int numberOfLines) throws IOException {
-        final BoundedLinkedList<String> resultBuffer = new BoundedLinkedList<String>(numberOfLines);
-        final BufferedReader reader;
-        if (fileName.contains("/")) {
-            reader = new BufferedReader(new InputStreamReader(new FileInputStream(fileName)), 1024);
-        } else {
-            reader = new BufferedReader(new InputStreamReader(context.openFileInput(fileName)), 1024);
-        }
+    @NonNull
+    @Override
+    Element collect(ReportField reportField, ReportBuilder reportBuilder) {
         try {
-            String line = reader.readLine();
-            while (line != null) {
-                resultBuffer.add(line + "\n");
-                line = reader.readLine();
-            }
-        } finally {
-            CollectorUtil.safeClose(reader);
+            return new StringElement(IOUtils.streamToString(
+                    getStream(config.applicationLogFileDir(), config.applicationLogFile()),
+                    config.applicationLogFileLines()));
+        } catch (IOException e) {
+            return ACRAConstants.NOT_AVAILABLE;
         }
-        return resultBuffer.toString();
+    }
+
+    /**
+     * get the application log file location and open it
+     *
+     * @param directory the base directory for the file path
+     * @param fileName the name of the file
+     * @return a stream to the file or an empty stream if the file was not found
+     */
+    @NonNull
+    private InputStream getStream(@NonNull Directory directory, @NonNull String fileName) {
+        if (directory == Directory.FILES_LEGACY) {
+            directory = fileName.startsWith("/") ? Directory.ROOT : Directory.FILES;
+        }
+        final File dir;
+        switch (directory) {
+            case FILES:
+                dir = context.getFilesDir();
+                break;
+            case EXTERNAL_FILES:
+                dir = context.getExternalFilesDir(null);
+                break;
+            case CACHE:
+                dir = context.getCacheDir();
+                break;
+            case EXTERNAL_CACHE:
+                dir = context.getExternalCacheDir();
+                break;
+            case NO_BACKUP_FILES:
+                dir = ContextCompat.getNoBackupFilesDir(context);
+                break;
+            case EXTERNAL_STORAGE:
+                dir = Environment.getExternalStorageDirectory();
+                break;
+            case ROOT:
+            default:
+                dir = new File("/");
+                break;
+        }
+        final File file = new File(dir, fileName);
+        if (!file.exists()) {
+            if (ACRA.DEV_LOGGING)
+                ACRA.log.d(LOG_TAG, "Log file '" + file.getPath() + "' does not exist");
+        } else if (file.isDirectory()) {
+            ACRA.log.e(LOG_TAG, "Log file '" + file.getPath() + "' is a directory");
+        } else if (!file.canRead()) {
+            ACRA.log.e(LOG_TAG, "Log file '" + file.getPath() + "' can't be read");
+        } else {
+            try {
+                return new FileInputStream(file);
+            } catch (IOException e) {
+                ACRA.log.e(LOG_TAG, "Could not open stream for log file '" + file.getPath() + "'");
+            }
+        }
+        return new ByteArrayInputStream(new byte[0]);
     }
 }

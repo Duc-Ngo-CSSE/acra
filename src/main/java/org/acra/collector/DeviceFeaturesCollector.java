@@ -15,51 +15,58 @@
  */
 package org.acra.collector;
 
+import android.content.Context;
+import android.content.pm.FeatureInfo;
+import android.content.pm.PackageManager;
+import android.support.annotation.NonNull;
+
+import org.acra.ACRA;
+import org.acra.ReportField;
+import org.acra.builder.ReportBuilder;
+import org.acra.model.ComplexElement;
+import org.acra.model.Element;
+
 import static org.acra.ACRA.LOG_TAG;
 
-import java.lang.reflect.Method;
-
-import android.content.Context;
-import android.content.pm.PackageManager;
-import android.util.Log;
-
 /**
- * Features declared as available on the device. Available only with API level > 5.
- * 
- * @author Kevin Gaudin
- * 
+ * Features declared as available on the device.
+ *
+ * @author Kevin Gaudin & F43nd1r
  */
-final class DeviceFeaturesCollector {
+final class DeviceFeaturesCollector extends Collector {
+    private final Context context;
 
-    public static String getFeatures(Context ctx) {
+    DeviceFeaturesCollector(Context context) {
+        super(ReportField.DEVICE_FEATURES);
+        this.context = context;
+    }
 
-        if (Compatibility.getAPILevel() < 5) {
-            return "Data available only with API Level >= 5";
-        }
-
-        final StringBuilder result = new StringBuilder();
+    /**
+     * collects device features
+     *
+     * @param reportField   the ReportField to collect
+     * @param reportBuilder the current reportBuilder
+     * @return Element of all device feature names
+     */
+    @NonNull
+    @Override
+    Element collect(ReportField reportField, ReportBuilder reportBuilder) {
+        final ComplexElement result = new ComplexElement();
         try {
-            final PackageManager pm = ctx.getPackageManager();
-            final Method getSystemAvailableFeatures = PackageManager.class.getMethod("getSystemAvailableFeatures", (Class[]) null);
-            final Object[] features = (Object[]) getSystemAvailableFeatures.invoke(pm);
-            for (final Object feature : features) {
-                final String featureName = (String) feature.getClass().getField("name").get(feature);
-                if(featureName != null) {
-                    result.append(featureName);
+            final PackageManager pm = context.getPackageManager();
+            final FeatureInfo[] features = pm.getSystemAvailableFeatures();
+            for (final FeatureInfo feature : features) {
+                final String featureName = feature.name;
+                if (featureName != null) {
+                    result.put(featureName, true);
                 } else {
-                    final Method getGlEsVersion = feature.getClass().getMethod("getGlEsVersion", (Class[]) null);
-                    final String glEsVersion = (String) getGlEsVersion.invoke(feature);
-                    result.append("glEsVersion = ");
-                    result.append(glEsVersion);
+                    result.put("glEsVersion", feature.getGlEsVersion());
                 }
-                result.append("\n");
             }
         } catch (Throwable e) {
-            Log.w(LOG_TAG, "Couldn't retrieve DeviceFeatures for " + ctx.getPackageName(), e);
-            result.append("Could not retrieve data: ");
-            result.append(e.getMessage());
+            ACRA.log.w(LOG_TAG, "Couldn't retrieve DeviceFeatures for " + context.getPackageName(), e);
         }
 
-        return result.toString();
+        return result;
     }
 }

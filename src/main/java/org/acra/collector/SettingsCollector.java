@@ -16,145 +16,169 @@
 
 package org.acra.collector;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
-
-import org.acra.ACRA;
-
-import android.content.ContentResolver;
 import android.content.Context;
-import android.provider.Settings;
+import android.os.Build;
+import android.provider.Settings.Global;
 import android.provider.Settings.Secure;
 import android.provider.Settings.System;
-import android.util.Log;
+import android.support.annotation.NonNull;
+import android.support.annotation.Nullable;
+
+import org.acra.ACRA;
+import org.acra.ACRAConstants;
+import org.acra.ReportField;
+import org.acra.builder.ReportBuilder;
+import org.acra.config.ACRAConfiguration;
+import org.acra.model.ComplexElement;
+import org.acra.model.Element;
+import org.json.JSONException;
+
+import java.lang.reflect.Field;
+
+import static org.acra.ACRA.LOG_TAG;
 
 /**
- * Helper to collect data from {@link System} and {@link Secure} Settings
+ * collects data from {@link System}, {@link Global} and {@link Secure} Settings
  * classes.
- * 
- * @author Kevin Gaudin
- * 
+ *
+ * @author Kevin Gaudin & F43nd1r
  */
-final class SettingsCollector {
+final class SettingsCollector extends Collector {
+
+    private static final String ERROR = "Error: ";
+
+    private final Context context;
+    private final ACRAConfiguration config;
+
+    SettingsCollector(@NonNull Context context, @NonNull ACRAConfiguration config) {
+        super(ReportField.SETTINGS_SYSTEM, ReportField.SETTINGS_SECURE, ReportField.SETTINGS_GLOBAL);
+        this.context = context;
+        this.config = config;
+    }
 
     /**
-     * Collect data from {@link android.provider.Settings.System}. This
+     * Collect data from {@link System}. This
      * collector uses reflection to be sure to always get the most accurate data
      * whatever Android API level it runs on.
-     * 
-     * @param ctx
-     *            Application context.
-     * @return A human readable String containing one key=value pair per line.
+     *
+     * @return collected key-value pairs.
      */
-    public static String collectSystemSettings(Context ctx) {
-        final StringBuilder result = new StringBuilder();
-        final Field[] keys = Settings.System.class.getFields();
+    @NonNull
+    private Element collectSystemSettings() throws JSONException {
+        final ComplexElement result = new ComplexElement();
+        final Field[] keys = System.class.getFields();
         for (final Field key : keys) {
             // Avoid retrieving deprecated fields... it is useless, has an
-            // impact on perfs, and the system writes many warnings in the
+            // impact on prefs, and the system writes many warnings in the
             // logcat.
             if (!key.isAnnotationPresent(Deprecated.class) && key.getType() == String.class) {
                 try {
-                    final Object value = Settings.System.getString(ctx.getContentResolver(), (String) key.get(null));
+                    final Object value = System.getString(context.getContentResolver(), (String) key.get(null));
                     if (value != null) {
-                        result.append(key.getName()).append("=").append(value).append("\n");
+                        result.put(key.getName(), value);
                     }
-                } catch (IllegalArgumentException e) {
-                    Log.w(ACRA.LOG_TAG, "Error : ", e);
-                } catch (IllegalAccessException e) {
-                    Log.w(ACRA.LOG_TAG, "Error : ", e);
+                } catch (@NonNull IllegalArgumentException e) {
+                    ACRA.log.w(LOG_TAG, ERROR, e);
+                } catch (@NonNull IllegalAccessException e) {
+                    ACRA.log.w(LOG_TAG, ERROR, e);
                 }
             }
         }
-
-        return result.toString();
+        return result;
     }
 
     /**
-     * Collect data from {@link android.provider.Settings.Secure}. This
+     * Collect data from {@link Secure}. This
      * collector uses reflection to be sure to always get the most accurate data
      * whatever Android API level it runs on.
-     * 
-     * @param ctx
-     *            Application context.
-     * @return A human readable String containing one key=value pair per line.
+     *
+     * @return collected key-value pairs.
      */
-    public static String collectSecureSettings(Context ctx) {
-        final StringBuilder result = new StringBuilder();
-        final Field[] keys = Settings.Secure.class.getFields();
+    @NonNull
+    private Element collectSecureSettings() throws JSONException {
+        final ComplexElement result = new ComplexElement();
+        final Field[] keys = Secure.class.getFields();
         for (final Field key : keys) {
             if (!key.isAnnotationPresent(Deprecated.class) && key.getType() == String.class && isAuthorized(key)) {
                 try {
-                    final Object value = Settings.Secure.getString(ctx.getContentResolver(), (String) key.get(null));
+                    final Object value = Secure.getString(context.getContentResolver(), (String) key.get(null));
                     if (value != null) {
-                        result.append(key.getName()).append("=").append(value).append("\n");
+                        result.put(key.getName(), value);
                     }
-                } catch (IllegalArgumentException e) {
-                    Log.w(ACRA.LOG_TAG, "Error : ", e);
-                } catch (IllegalAccessException e) {
-                    Log.w(ACRA.LOG_TAG, "Error : ", e);
+                } catch (@NonNull IllegalArgumentException e) {
+                    ACRA.log.w(LOG_TAG, ERROR, e);
+                } catch (@NonNull IllegalAccessException e) {
+                    ACRA.log.w(LOG_TAG, ERROR, e);
                 }
             }
         }
-
-        return result.toString();
+        return result;
     }
 
     /**
-     * Collect data from {@link android.provider.Settings.Global}. This
+     * Collect data from {@link Global}. This
      * collector uses reflection to be sure to always get the most accurate data
      * whatever Android API level it runs on.
-     * 
-     * @param ctx
-     *            Application context.
-     * @return A human readable String containing one key=value pair per line.
+     *
+     * @return collected key-value pairs.
      */
-    public static String collectGlobalSettings(Context ctx) {
-        if (Compatibility.getAPILevel() < 17) {
-            return "";
+    @NonNull
+    private Element collectGlobalSettings() throws JSONException {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN_MR1) {
+            return ACRAConstants.NOT_AVAILABLE;
         }
 
-        final StringBuilder result = new StringBuilder();
-        try {
-            final Class<?> globalClass = Class.forName("android.provider.Settings$Global");
-            final Field[] keys = globalClass.getFields();
-            final Method getString = globalClass.getMethod("getString", ContentResolver.class, String.class);
-            for (final Field key : keys) {
-                if (!key.isAnnotationPresent(Deprecated.class) && key.getType() == String.class && isAuthorized(key)) {
-                    final Object value = getString.invoke(null, ctx.getContentResolver(), (String) key.get(null));
+        final ComplexElement result = new ComplexElement();
+        final Field[] keys = Global.class.getFields();
+        for (final Field key : keys) {
+            if (!key.isAnnotationPresent(Deprecated.class) && key.getType() == String.class && isAuthorized(key)) {
+                try {
+                    final Object value = Global.getString(context.getContentResolver(), (String) key.get(null));
                     if (value != null) {
-                        result.append(key.getName()).append("=").append(value).append("\n");
+                        result.put(key.getName(), value);
                     }
+                } catch (@NonNull IllegalArgumentException e) {
+                    ACRA.log.w(LOG_TAG, ERROR, e);
+                } catch (@NonNull SecurityException e) {
+                    ACRA.log.w(LOG_TAG, ERROR, e);
+                } catch (@NonNull IllegalAccessException e) {
+                    ACRA.log.w(LOG_TAG, ERROR, e);
                 }
             }
-        } catch (IllegalArgumentException e) {
-            Log.w(ACRA.LOG_TAG, "Error : ", e);
-        } catch (IllegalAccessException e) {
-            Log.w(ACRA.LOG_TAG, "Error : ", e);
-        } catch (ClassNotFoundException e) {
-            Log.w(ACRA.LOG_TAG, "Error : ", e);
-        } catch (SecurityException e) {
-            Log.w(ACRA.LOG_TAG, "Error : ", e);
-        } catch (NoSuchMethodException e) {
-            Log.w(ACRA.LOG_TAG, "Error : ", e);
-        } catch (InvocationTargetException e) {
-            Log.w(ACRA.LOG_TAG, "Error : ", e);
         }
-
-        return result.toString();
+        return result;
     }
 
-    private static boolean isAuthorized(Field key) {
+    private boolean isAuthorized(@Nullable Field key) {
         if (key == null || key.getName().startsWith("WIFI_AP")) {
             return false;
         }
-        for (String regex : ACRA.getConfig().excludeMatchingSettingsKeys()) {
-            if(key.getName().matches(regex)) {
-               return false; 
+        for (String regex : config.excludeMatchingSettingsKeys()) {
+            if (key.getName().matches(regex)) {
+                return false;
             }
         }
         return true;
     }
 
+    @NonNull
+    @Override
+    Element collect(ReportField reportField, ReportBuilder reportBuilder) {
+        try {
+        switch (reportField) {
+            case SETTINGS_SYSTEM:
+                    return collectSystemSettings();
+            case SETTINGS_SECURE:
+                return collectSecureSettings();
+            case SETTINGS_GLOBAL:
+                return collectGlobalSettings();
+            default:
+                //will not happen if used correctly
+                throw new IllegalArgumentException();
+        }
+        } catch (JSONException e) {
+            ACRA.log.w("Could not collect Settings", e);
+            return ACRAConstants.NOT_AVAILABLE;
+        }
+    }
 }

@@ -16,24 +16,29 @@
 
 package org.acra.collector;
 
+import android.support.annotation.NonNull;
+
+import org.acra.ReportField;
+import org.acra.model.BooleanElement;
+import org.acra.model.Element;
+import org.acra.model.NumberElement;
+import org.acra.model.StringElement;
+import org.acra.util.JsonUtils;
+import org.json.JSONObject;
+
 import java.util.EnumMap;
 import java.util.Properties;
 
-import org.acra.ReportField;
-import org.acra.util.JSONReportBuilder;
-import org.acra.util.JSONReportBuilder.JSONReportException;
-import org.json.JSONObject;
-
 /**
  * Stores a crash reports data with {@link org.acra.ReportField} enum values as keys.
+ * <p>
  * This is basically the source of {@link Properties} adapted to extend an
  * EnumMap instead of Hashtable and with a few tweaks to avoid losing crazy
- * amounts of android time in the generation of a date comment when storing to
- * file.
+ * amounts of android time in the generation of a date comment when storing to file.
  */
-public final class CrashReportData extends EnumMap<ReportField, String> {
+public final class CrashReportData extends EnumMap<ReportField, Element> {
 
-    private static final long serialVersionUID = 4112578634029874840L;
+    private static final long serialVersionUID = 5002578634500874842L;
 
     /**
      * Constructs a new {@code Properties} object.
@@ -44,15 +49,29 @@ public final class CrashReportData extends EnumMap<ReportField, String> {
 
     /**
      * Returns the property with the specified name.
-     * 
+     *
      * @param key the name of the property to find.
      * @return the named property value, or {@code null} if it can't be found.
      */
-    public String getProperty(ReportField key) {
-        return super.get(key);
+    public String getProperty(@NonNull ReportField key) {
+        return super.get(key).toString();
     }
 
-    public JSONObject toJSON() throws JSONReportException {
-        return JSONReportBuilder.buildJSONReport(this);
+    public void putString(@NonNull ReportField key, String value) {
+        put(key, new StringElement(value));
     }
+
+    public void putNumber(@NonNull ReportField key, Number value) {
+        put(key, new NumberElement(value));
+    }
+
+    public void putBoolean(@NonNull ReportField key, boolean value) {
+        put(key, new BooleanElement(value));
+    }
+
+    @NonNull
+    public JSONObject toJSON() {
+        return JsonUtils.toJson(this);
+    }
+
 }

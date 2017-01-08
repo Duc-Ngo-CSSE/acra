@@ -16,68 +16,83 @@
 
 package org.acra.collector;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
-import java.util.Arrays;
-
+import android.annotation.TargetApi;
+import android.media.MediaCodecInfo;
+import android.media.MediaCodecList;
+import android.os.Build;
+import android.support.annotation.NonNull;
+import android.support.annotation.Nullable;
 import android.util.SparseArray;
+
+import org.acra.ACRA;
+import org.acra.ACRAConstants;
+import org.acra.ReportField;
+import org.acra.builder.ReportBuilder;
+import org.acra.model.ComplexElement;
+import org.acra.model.Element;
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
+import java.util.Set;
 
 /**
  * Collects data about available codecs on the device through the MediaCodecList
  * API introduced in Android 4.1 JellyBean.
- * 
- * @author Kevin Gaudin
- * 
+ *
+ * @author Kevin Gaudin & F43nd1r
  */
-public class MediaCodecListCollector {
+final class MediaCodecListCollector extends Collector {
+
     private enum CodecType {
         AVC, H263, MPEG4, AAC
 
     }
 
     private static final String COLOR_FORMAT_PREFIX = "COLOR_";
-    private static final String[] MPEG4_TYPES = { "mp4", "mpeg4", "MP4", "MPEG4" };
-    private static final String[] AVC_TYPES = { "avc", "h264", "AVC", "H264" };
-    private static final String[] H263_TYPES = { "h263", "H263" };
-    private static final String[] AAC_TYPES = { "aac", "AAC" };
+    private static final String[] MPEG4_TYPES = {"mp4", "mpeg4", "MP4", "MPEG4"};
+    private static final String[] AVC_TYPES = {"avc", "h264", "AVC", "H264"};
+    private static final String[] H263_TYPES = {"h263", "H263"};
+    private static final String[] AAC_TYPES = {"aac", "AAC"};
 
-    private static Class<?> mediaCodecListClass = null;
-    private static Method getCodecInfoAtMethod = null;
-    private static Class<?> mediaCodecInfoClass = null;
-    private static Method getNameMethod = null;
-    private static Method isEncoderMethod = null;
-    private static Method getSupportedTypesMethod = null;
-    private static Method getCapabilitiesForTypeMethod = null;
-    private static Class<?> codecCapabilitiesClass = null;
-    private static Field colorFormatsField = null;
-    private static Field profileLevelsField = null;
-    private static Field profileField = null;
-    private static Field levelField = null;
-    private static SparseArray<String> mColorFormatValues = new SparseArray<String>();
-    private static SparseArray<String> mAVCLevelValues = new SparseArray<String>();
-    private static SparseArray<String> mAVCProfileValues = new SparseArray<String>();
-    private static SparseArray<String> mH263LevelValues = new SparseArray<String>();
-    private static SparseArray<String> mH263ProfileValues = new SparseArray<String>();
-    private static SparseArray<String> mMPEG4LevelValues = new SparseArray<String>();
-    private static SparseArray<String> mMPEG4ProfileValues = new SparseArray<String>();
-    private static SparseArray<String> mAACProfileValues = new SparseArray<String>();
+    private final SparseArray<String> mColorFormatValues = new SparseArray<String>();
+    private final SparseArray<String> mAVCLevelValues = new SparseArray<String>();
+    private final SparseArray<String> mAVCProfileValues = new SparseArray<String>();
+    private final SparseArray<String> mH263LevelValues = new SparseArray<String>();
+    private final SparseArray<String> mH263ProfileValues = new SparseArray<String>();
+    private final SparseArray<String> mMPEG4LevelValues = new SparseArray<String>();
+    private final SparseArray<String> mMPEG4ProfileValues = new SparseArray<String>();
+    private final SparseArray<String> mAACProfileValues = new SparseArray<String>();
 
-    // static init where nearly all reflection inspection is done.
-    static {
+    MediaCodecListCollector() {
+        super(ReportField.MEDIA_CODEC_LIST);
+    }
+
+    @TargetApi(Build.VERSION_CODES.JELLY_BEAN)
+    @NonNull
+    @Override
+    Element collect(ReportField reportField, ReportBuilder reportBuilder) {
         try {
-            mediaCodecListClass = Class.forName("android.media.MediaCodecList");
-            // Get methods to retrieve media codec info
-            getCodecInfoAtMethod = mediaCodecListClass.getMethod("getCodecInfoAt", int.class);
-            mediaCodecInfoClass = Class.forName("android.media.MediaCodecInfo");
-            getNameMethod = mediaCodecInfoClass.getMethod("getName");
-            isEncoderMethod = mediaCodecInfoClass.getMethod("isEncoder");
-            getSupportedTypesMethod = mediaCodecInfoClass.getMethod("getSupportedTypes");
-            getCapabilitiesForTypeMethod = mediaCodecInfoClass.getMethod("getCapabilitiesForType", String.class);
-            codecCapabilitiesClass = Class.forName("android.media.MediaCodecInfo$CodecCapabilities");
-            colorFormatsField = codecCapabilitiesClass.getField("colorFormats");
-            profileLevelsField = codecCapabilitiesClass.getField("profileLevels");
+            return collectMediaCodecList();
+        } catch (JSONException e) {
+            ACRA.log.w("Could not collect media codecs", e);
+            return ACRAConstants.NOT_AVAILABLE;
+        }
+    }
+
+    @Override
+    boolean shouldCollect(Set<ReportField> crashReportFields, ReportField collect, ReportBuilder reportBuilder) {
+        return super.shouldCollect(crashReportFields, collect, reportBuilder) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN;
+    }
+
+    /**
+     * use reflection to prepare field arrays.
+     */
+    private void prepare() {
+        try {
+            final Class<?> codecCapabilitiesClass = Class.forName("android.media.MediaCodecInfo$CodecCapabilities");
 
             // Retrieve list of possible Color Format
             for (Field f : codecCapabilitiesClass.getFields()) {
@@ -88,7 +103,7 @@ public class MediaCodecListCollector {
             }
 
             // Retrieve lists of possible codecs profiles and levels
-            Class<?> codecProfileLevelClass = Class.forName("android.media.MediaCodecInfo$CodecProfileLevel");
+            final Class<?> codecProfileLevelClass = Class.forName("android.media.MediaCodecInfo$CodecProfileLevel");
             for (Field f : codecProfileLevelClass.getFields()) {
                 if (Modifier.isStatic(f.getModifiers()) && Modifier.isFinal(f.getModifiers())) {
                     if (f.getName().startsWith("AVCLevel")) {
@@ -108,153 +123,136 @@ public class MediaCodecListCollector {
                     }
                 }
             }
-
-            profileField = codecProfileLevelClass.getField("profile");
-            levelField = codecProfileLevelClass.getField("level");
-
-        } catch (ClassNotFoundException e) {
+        } catch (@NonNull ClassNotFoundException ignored) {
             // NOOP
-        } catch (NoSuchMethodException e) {
+        } catch (@NonNull SecurityException ignored) {
             // NOOP
-        } catch (IllegalArgumentException e) {
+        } catch (@NonNull IllegalAccessException ignored) {
             // NOOP
-        } catch (IllegalAccessException e) {
-            // NOOP
-        } catch (SecurityException e) {
-            // NOOP
-        } catch (NoSuchFieldException e) {
+        } catch (@NonNull IllegalArgumentException ignored) {
             // NOOP
         }
 
     }
 
     /**
-     * Builds a String describing the list of available codecs on the device
+     * Builds an Element describing the list of available codecs on the device
      * with their capabilities (supported Color Formats, Codec Profiles et
      * Levels).
-     * 
+     *
      * @return The media codecs information
      */
-    public static String collecMediaCodecList() {
-        StringBuilder result = new StringBuilder();
-        if (mediaCodecListClass != null && mediaCodecInfoClass != null) {
-            try {
-                // Retrieve list of available media codecs
-                int codecCount = (Integer) (mediaCodecListClass.getMethod("getCodecCount").invoke(null));
-
-                // Go through each available media codec
-                Object codecInfo = null;
-                for (int codecIdx = 0; codecIdx < codecCount; codecIdx++) {
-                    result.append("\n");
-                    codecInfo = getCodecInfoAtMethod.invoke(null, codecIdx);
-                    result.append(codecIdx).append(": ").append(getNameMethod.invoke(codecInfo)).append("\n");
-                    result.append("isEncoder: ").append(isEncoderMethod.invoke(codecInfo)).append("\n");
-                    String[] supportedTypes = (String[]) getSupportedTypesMethod.invoke(codecInfo);
-                    result.append("Supported types: ").append(Arrays.toString(supportedTypes)).append("\n");
-                    for (String type : supportedTypes) {
-                        result.append(collectCapabilitiesForType(codecInfo, type));
-                    }
-                    result.append("\n");
-                }
-            } catch (NoSuchMethodException e) {
-                // NOOP
-            } catch (IllegalAccessException e) {
-                // NOOP
-            } catch (InvocationTargetException e) {
-                // NOOP
+    @TargetApi(Build.VERSION_CODES.JELLY_BEAN)
+    @NonNull
+    private Element collectMediaCodecList() throws JSONException {
+        prepare();
+        final MediaCodecInfo[] infos;
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
+            //noinspection deprecation
+            final int codecCount = MediaCodecList.getCodecCount();
+            infos = new MediaCodecInfo[codecCount];
+            for (int codecIdx = 0; codecIdx < codecCount; codecIdx++) {
+                //noinspection deprecation
+                infos[codecIdx] = MediaCodecList.getCodecInfoAt(codecIdx);
             }
+        } else {
+            infos = new MediaCodecList(MediaCodecList.ALL_CODECS).getCodecInfos();
         }
-        return result.toString();
+
+        final ComplexElement result = new ComplexElement();
+        for (int i = 0; i < infos.length; i++) {
+            final MediaCodecInfo codecInfo = infos[i];
+            JSONObject codec = new JSONObject();
+            final String[] supportedTypes = codecInfo.getSupportedTypes();
+            codec.put("name", codecInfo.getName())
+                    .put("isEncoder", codecInfo.isEncoder());
+            JSONObject supportedTypesJson = new JSONObject();
+            for (String type : supportedTypes) {
+                supportedTypesJson.put(type, collectCapabilitiesForType(codecInfo, type));
+            }
+            codec.put("supportedTypes", supportedTypesJson);
+            result.put(String.valueOf(i), codec);
+        }
+        return result;
     }
 
     /**
      * Retrieve capabilities (ColorFormats and CodecProfileLevels) for a
      * specific codec type.
-     * 
-     * @param codecInfo
-     * @param type
-     * @return A string describing the color formats and codec profile levels
-     *         available for a specific codec type.
-     * @throws IllegalArgumentException
-     * @throws IllegalAccessException
-     * @throws InvocationTargetException
+     *
+     * @param codecInfo the currently inspected codec
+     * @param type      supported type to collect
+     * @return the color formats and codec profile levels
+     * available for a specific codec type.
      */
-    private static String collectCapabilitiesForType(Object codecInfo, String type) throws IllegalArgumentException,
-            IllegalAccessException, InvocationTargetException {
-        StringBuilder result = new StringBuilder();
-
-        Object codecCapabilities = getCapabilitiesForTypeMethod.invoke(codecInfo, type);
+    @NonNull
+    @TargetApi(Build.VERSION_CODES.JELLY_BEAN)
+    private JSONObject collectCapabilitiesForType(@NonNull final MediaCodecInfo codecInfo, @NonNull String type) throws JSONException {
+        final JSONObject result = new JSONObject();
+        final MediaCodecInfo.CodecCapabilities codecCapabilities = codecInfo.getCapabilitiesForType(type);
 
         // Color Formats
-        int[] colorFormats = (int[]) colorFormatsField.get(codecCapabilities);
+        final int[] colorFormats = codecCapabilities.colorFormats;
         if (colorFormats.length > 0) {
-            result.append(type).append(" color formats:");
-            for (int i = 0; i < colorFormats.length; i++) {
-                result.append(mColorFormatValues.get(colorFormats[i]));
-                if (i < colorFormats.length - 1) {
-                    result.append(',');
-                }
+            JSONArray colorFormatsJson = new JSONArray();
+            for (int colorFormat : colorFormats) {
+                colorFormatsJson.put(mColorFormatValues.get(colorFormat));
             }
-            result.append("\n");
+            result.put("colorFormats", colorFormatsJson);
         }
 
-        // Profile Levels
-        Object[] codecProfileLevels = (Object[]) profileLevelsField.get(codecCapabilities);
-        if (codecProfileLevels.length > 0) {
-            result.append(type).append(" profile levels:");
-            for (int i = 0; i < codecProfileLevels.length; i++) {
+        final CodecType codecType = identifyCodecType(codecInfo);
 
-                CodecType codecType = identifyCodecType(codecInfo);
-                int profileValue = profileField.getInt(codecProfileLevels[i]);
-                int levelValue = levelField.getInt(codecProfileLevels[i]);
+        // Profile Levels
+        final MediaCodecInfo.CodecProfileLevel[] codecProfileLevels = codecCapabilities.profileLevels;
+        if (codecProfileLevels.length > 0) {
+            JSONArray profileLevels = new JSONArray();
+            for (MediaCodecInfo.CodecProfileLevel codecProfileLevel : codecProfileLevels) {
+                final int profileValue = codecProfileLevel.profile;
+                final int levelValue = codecProfileLevel.level;
 
                 if (codecType == null) {
                     // Unknown codec
-                    result.append(profileValue).append('-').append(levelValue);
+                    profileLevels.put(profileValue + '-' + levelValue);
+                    break;
                 }
 
                 switch (codecType) {
-                case AVC:
-                    result.append(profileValue).append(mAVCProfileValues.get(profileValue)).append('-')
-                            .append(mAVCLevelValues.get(levelValue));
-                    break;
-                case H263:
-                    result.append(mH263ProfileValues.get(profileValue)).append('-')
-                            .append(mH263LevelValues.get(levelValue));
-                    break;
-                case MPEG4:
-                    result.append(mMPEG4ProfileValues.get(profileValue)).append('-')
-                            .append(mMPEG4LevelValues.get(levelValue));
-                    break;
-                case AAC:
-                    result.append(mAACProfileValues.get(profileValue));
-                    break;
-                default:
-                    break;
+                    case AVC:
+                        profileLevels.put(profileValue + mAVCProfileValues.get(profileValue)
+                                + '-' + mAVCLevelValues.get(levelValue));
+                        break;
+                    case H263:
+                        profileLevels.put(mH263ProfileValues.get(profileValue)
+                                + '-' + mH263LevelValues.get(levelValue));
+                        break;
+                    case MPEG4:
+                        profileLevels.put(mMPEG4ProfileValues.get(profileValue)
+                                + '-' + mMPEG4LevelValues.get(levelValue));
+                        break;
+                    case AAC:
+                        profileLevels.put(mAACProfileValues.get(profileValue));
+                        break;
+                    default:
+                        break;
                 }
-
-                if (i < codecProfileLevels.length - 1) {
-                    result.append(',');
-                }
-
             }
-            result.append("\n");
+            result.put("profileLevels", profileLevels);
         }
-        return result.append("\n").toString();
+        return result;
     }
 
     /**
      * Looks for keywords in the codec name to identify its nature ({@link CodecType}).
-     * @param codecInfo
-     * @return
-     * @throws IllegalArgumentException
-     * @throws IllegalAccessException
-     * @throws InvocationTargetException
+     *
+     * @param codecInfo the currently inspected codec
+     * @return type of the codec or null if it could bot be guessed
      */
-    private static CodecType identifyCodecType(Object codecInfo) throws IllegalArgumentException,
-            IllegalAccessException, InvocationTargetException {
+    @Nullable
+    @TargetApi(Build.VERSION_CODES.JELLY_BEAN)
+    private CodecType identifyCodecType(@NonNull MediaCodecInfo codecInfo) {
 
-        String name = (String) getNameMethod.invoke(codecInfo);
+        final String name = codecInfo.getName();
         for (String token : AVC_TYPES) {
             if (name.contains(token)) {
                 return CodecType.AVC;
